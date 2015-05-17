@@ -47,8 +47,8 @@ class Model(object):
         self.team_play_counts = collections.Counter()
 
     def predict(self, first_team, second_team, date):
-        first_rating = self.single_ratings.setdefault(first_team[0], Model.INITIAL_RATING)
-        second_rating = self.single_ratings.setdefault(second_team[0], Model.INITIAL_RATING)
+        first_rating, _ = self.get_team_rating_and_updater(first_team)
+        second_rating, _ = self.get_team_rating_and_updater(second_team)
         return sigmoid(Model.SIGMOID_SCALE * (first_rating - second_rating))
 
     def update(self, record):
@@ -233,8 +233,6 @@ def evaluate_model(model, records, start=None, end=None):
     for index, record in enumerate(records):
         if (start is None or index >= start) and (end is None or index < end):
             p = model.predict(record.first_team, record.second_team, record.date)
-            if not 0 <= p <= 1:
-                model.predict(record.first_team, record.second_team, record.date)
             assert 0 <= p <= 1
             assert record.first_score != record.second_score
             p_corrected = p if record.first_score > record.second_score else 1 - p
@@ -301,7 +299,7 @@ def tune(args):
 def maximize(func, initial_vector, limit):
     best_vector = initial_vector
     best_value = func(initial_vector)
-    print 'Initial value:', best_value, best_vector
+    print 'Initial value:', best_value, Parameters.from_vector(best_vector).to_dict()
     neg = lambda x: -x if x is not None else None
     func_wrapper = lambda x: neg(func(x))
     for _ in xrange(limit):
@@ -310,7 +308,7 @@ def maximize(func, initial_vector, limit):
         if best_value is None or -value > best_value:
             best_vector = opt_vector
             best_value = -value
-            print 'New best value:', best_value, best_vector
+            print 'New best value:', best_value, Parameters.from_vector(best_vector).to_dict()
     return best_vector, best_value
 
 
