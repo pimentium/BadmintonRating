@@ -1,0 +1,4 @@
+badminton
+=========
+
+Badminton Rating Model
