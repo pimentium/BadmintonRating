@@ -129,15 +129,6 @@ class Model(object):
             sig_derivative = sigmoid_derivative(scaled_rating_diff)
             weight_diff = self.parameters.higher_single_weight - self.parameters.lower_single_weight
 
-            # if player1_rating > player2_rating:
-            #     player1_weight = self.parameters.higher_single_weight
-            #     player2_weight = self.parameters.lower_single_weight
-            # elif player1_rating < player2_rating:
-            #     player1_weight = self.parameters.lower_single_weight
-            #     player2_weight = self.parameters.higher_single_weight
-            # else:
-            #     player1_weight = player2_weight = (self.parameters.lower_single_weight + self.parameters.higher_single_weight) / 2
-
             team_count = self.team_play_counts[team]
             weight_sum = self.parameters.single_weight + team_count
             rating = (self.parameters.single_weight * (player1_weight * player1_rating +
@@ -294,7 +285,7 @@ def tune(args):
         model = Model(parameters)
         return evaluate_model(model, records, *args.bound)
 
-    result, best_result = maximize(func, initial_vector)
+    result, best_result = maximize(func, initial_vector, args.tunelimit)
     best_parameters = Parameters.from_vector(result)
     # best_result = evaluate_model(Model(best_parameters), records, *args.bound)
     print 'Best result:', best_result
@@ -307,14 +298,13 @@ def tune(args):
     #     print 'Parameters:', parameters.to_dict()
 
 
-def maximize(func, initial_vector):
+def maximize(func, initial_vector, limit):
     best_vector = initial_vector
     best_value = func(initial_vector)
-    print 'New best value:', best_value, best_vector
+    print 'Initial value:', best_value, best_vector
     neg = lambda x: -x if x is not None else None
     func_wrapper = lambda x: neg(func(x))
-    LIMIT = 1000
-    for _ in xrange(LIMIT):
+    for _ in xrange(limit):
         vector = best_vector * np.random.lognormal(0, 1, (len(initial_vector),))
         opt_vector, value, _, _, _ = optimize.fmin(func_wrapper, vector, full_output=True)
         if best_value is None or -value > best_value:
@@ -362,6 +352,8 @@ def main():
                         help='File with model parameters')
     parser.add_argument('--checkgrad', default=False, action='store_true',
                         help='Check that gradient is correct on every update of the model')
+    parser.add_argument('--tunelimit', type=int, default=1,
+                        help='Number of times to make leaps from local optima while tuning')
     # parser.add_argument('--reg', dest='regularizer', type=float, default=0.000000003,
     #                     help='Regularizer for tuning parameters')
     args = parser.parse_args()
