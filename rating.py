@@ -6,7 +6,7 @@ import sys
 
 import datetime
 import numpy as np
-from scipy import optimize
+import scipy.optimize
 
 
 class Record(object):
@@ -129,7 +129,7 @@ class Model(object):
             sig_derivative = sigmoid_derivative(scaled_rating_diff)
             weight_diff = self.parameters.higher_single_weight - self.parameters.lower_single_weight
 
-            team_count = self.team_play_counts[team]
+            team_count = self.team_play_counts[team] + self.parameters.double_prior_weight
             weight_sum = self.parameters.single_weight + team_count
             rating = (self.parameters.single_weight * (player1_weight * player1_rating +
                                                        player2_weight * player2_rating) +
@@ -175,11 +175,12 @@ class Parameters(object):
                  learning_rate=30 / Model.SIGMOID_SCALE,
                  double_initial_rating=1500,
                  double_learning_rate=30 / Model.SIGMOID_SCALE,
-                 single_weight=100,
+                 single_weight=1,
                  higher_single_weight=0.9,
                  lower_single_weight=0.5,
-                 single_weights_sigmoid_scale=10,
-                 double_single_learning_rate=30 / Model.SIGMOID_SCALE):
+                 single_weights_sigmoid_scale=1,
+                 double_single_learning_rate=30 / Model.SIGMOID_SCALE,
+                 double_prior_weight=1):
         self.learning_rate = learning_rate
         self.double_initial_rating = double_initial_rating
         self.double_learning_rate = double_learning_rate
@@ -188,21 +189,24 @@ class Parameters(object):
         self.lower_single_weight = lower_single_weight
         self.single_weights_sigmoid_scale = single_weights_sigmoid_scale
         self.double_single_learning_rate = double_single_learning_rate
+        self.double_prior_weight = double_prior_weight
 
     def validate(self):
         return (self.learning_rate > 0 and
                 self.double_initial_rating > 0 and
                 self.double_learning_rate > 0 and
-                self.single_weight > 0 and
+                self.single_weight >= 0 and
                 self.higher_single_weight >= self.lower_single_weight > 0 and
                 self.single_weights_sigmoid_scale > 0 and
-                self.double_single_learning_rate > 0)
+                self.double_single_learning_rate > 0 and
+                self.double_prior_weight >= 0)
 
     def to_vector(self):
         return np.array([self.learning_rate, self.double_initial_rating, self.double_learning_rate, self.single_weight,
                          self.higher_single_weight, self.lower_single_weight,
                          self.single_weights_sigmoid_scale,
-                         self.double_single_learning_rate])
+                         self.double_single_learning_rate,
+                         self.double_prior_weight])
 
     @staticmethod
     def from_vector(vector):
@@ -239,7 +243,7 @@ def evaluate_model(model, records, start=None, end=None):
             ll_sum += np.log(p_corrected)
             count += 1
         model.update(record)
-    return np.exp(ll_sum / count)
+    return ll_sum, count
 
 
 def read(filename):
@@ -268,46 +272,53 @@ def process(args):
 def evaluate(args):
     model = Model(args.parameters)
     records = list(read(args.input))
-    result = evaluate_model(model, records, *args.bound)
-    print 'Result:', result
+    ll_sum, count = evaluate_model(model, records, *args.bound)
+    print 'BIC: %f (likelihood: %f)' % (bic(ll_sum, count, len(args.parameters.to_vector())), likelihood(ll_sum, count))
+
+
+def likelihood(ll_sum, count):
+    return np.exp(ll_sum / count)
+
+
+def bic(ll_sum, count, parameter_count):
+    return -2 * ll_sum + parameter_count * np.log(count)
 
 
 def tune(args):
     records = list(read(args.input))
     initial_vector = args.parameters.to_vector()
 
-    def func(vector):
+    def bic_func(vector):
         parameters = Parameters.from_vector(vector)
         if not parameters.validate():
             return None
         model = Model(parameters)
-        return evaluate_model(model, records, *args.bound)
+        ll_sum, count = evaluate_model(model, records, *args.bound)
+        return bic(ll_sum, count, len(vector))
 
-    result, best_result = maximize(func, initial_vector, args.tunelimit)
-    best_parameters = Parameters.from_vector(result)
-    # best_result = evaluate_model(Model(best_parameters), records, *args.bound)
-    print 'Best result:', best_result
+    best_vector, best_result = optimize(bic_func, initial_vector, args.tunelimit)
+    best_parameters = Parameters.from_vector(best_vector)
+    ll = likelihood(*evaluate_model(Model(best_parameters), records, *args.bound))
+    print 'Best BIC: %f (likelihood: %f)' % (best_result, ll)
     json.dump(best_parameters.to_dict(), args.output)
     args.output.write('\n')
     # for vec in iterate_vectors(initial_vector):
-    #     result = optimize.fmin(func, vec)
-    #     parameters = Parameters.from_vector(result)
+    #     best_vector = optimize.fmin(func, vec)
+    #     parameters = Parameters.from_vector(best_vector)
     #     print 'Result:', evaluate_model(Model(parameters), records, *args.bound)
     #     print 'Parameters:', parameters.to_dict()
 
 
-def maximize(func, initial_vector, limit):
+def optimize(func, initial_vector, limit):
     best_vector = initial_vector
     best_value = func(initial_vector)
     print 'Initial value:', best_value, Parameters.from_vector(best_vector).to_dict()
-    neg = lambda x: -x if x is not None else None
-    func_wrapper = lambda x: neg(func(x))
     for _ in xrange(limit):
         vector = best_vector * np.random.lognormal(0, 1, (len(initial_vector),))
-        opt_vector, value, _, _, _ = optimize.fmin(func_wrapper, vector, full_output=True)
-        if best_value is None or -value > best_value:
+        opt_vector, value, _, _, _ = scipy.optimize.fmin(func, vector, full_output=True)
+        if best_value is None or value < best_value:
             best_vector = opt_vector
-            best_value = -value
+            best_value = value
             print 'New best value:', best_value, Parameters.from_vector(best_vector).to_dict()
     return best_vector, best_value
 
