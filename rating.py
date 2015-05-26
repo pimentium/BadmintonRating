@@ -9,6 +9,15 @@ import numpy as np
 import scipy.optimize
 
 
+#
+# Ideas:
+# - Hyperopt
+# - Product in double rating prediction: a_0 + a_1 * r_1 + a_2 * r_2 + a_3 * r_1^b_1 * r_2^b_2
+# - Use score values
+# - Aggregate by day
+#
+
+
 class Record(object):
     def __init__(self, first_team, second_team, date, first_score, second_score):
         self.first_team = first_team
@@ -28,8 +37,7 @@ class Variable(object):
 
 def get_setter(collection, key):
     def setter(value):
-        if value != value:
-            print 'A'
+        assert value == value
         collection[key] = value
     return setter
 
@@ -69,42 +77,6 @@ class Model(object):
             for variable in variables:
                 variable.setter(variable.value + variable.learning_rate * variable.partial_derivative * derivative)
             self.team_play_counts[tuple(sorted(team))] += 1
-        # if len(team) == 1:
-        #     rating = self.single_ratings[team[0]]
-        #
-        #     def update(dx):
-        #         self.single_ratings[team[0]] = rating + self.parameters.learning_rate * dx
-        # else:
-        #     team = tuple(sorted(team))
-        #     proper_rating = self.double_ratings[team]
-        #     player1, player2 = team
-        #     player1_rating = self.single_ratings[player1]
-        #     player2_rating = self.single_ratings[player2]
-        #
-        #     if player1_rating > player2_rating:
-        #         player1_weight = self.parameters.higher_single_weight
-        #         player2_weight = self.parameters.lower_single_weight
-        #     elif player1_rating < player2_rating:
-        #         player1_weight = self.parameters.lower_single_weight
-        #         player2_weight = self.parameters.higher_single_weight
-        #     else:
-        #         player1_weight = player2_weight = self.parameters.equal_single_weight
-        #         # player1_weight = player2_weight = (self.parameters.lower_single_weight + self.parameters.higher_single_weight) / 2
-        #
-        #     team_count = self.double_counts[team]
-        #     weight_sum = self.parameters.single_weight + team_count
-        #     rating = (self.parameters.single_weight * (player1_weight * player1_rating +
-        #                                                player2_weight * player2_rating) +
-        #               team_count * proper_rating) / weight_sum
-        #
-        #     def update(dx):
-        #         self.double_ratings[team] = (proper_rating + self.parameters.double_learning_rate *
-        #                                      team_count / weight_sum * dx)
-        #         self.single_ratings[player1] = (player1_rating + self.parameters.double_single_learning_rate *
-        #                                         self.parameters.single_weight * player1_weight / weight_sum * dx)
-        #         self.single_ratings[player2] = (player2_rating + self.parameters.double_single_learning_rate *
-        #                                         self.parameters.single_weight * player2_weight / weight_sum * dx)
-        #         self.double_counts[team] += 1
 
         return rating, update
 
@@ -234,16 +206,22 @@ def sigmoid_derivative(x):
 def evaluate_model(model, records, start=None, end=None):
     count = 0
     ll_sum = 0.0
+    correct_count = 0
+    capital = 1.0
     for index, record in enumerate(records):
         if (start is None or index >= start) and (end is None or index < end):
             p = model.predict(record.first_team, record.second_team, record.date)
             assert 0 <= p <= 1
             assert record.first_score != record.second_score
             p_corrected = p if record.first_score > record.second_score else 1 - p
+            if p_corrected > 0.5:
+                correct_count += 1
             ll_sum += np.log(p_corrected)
+            bet = min(capital, 1)
+            capital += bet * (p_corrected / ((p_corrected * bet + 0.5) / (bet + 1)) - 1)
             count += 1
         model.update(record)
-    return ll_sum, count
+    return {'Likelihood': np.exp(ll_sum / count), 'Precision': float(correct_count) / count, 'Capital': capital}
 
 
 def read(filename):
@@ -272,41 +250,30 @@ def process(args):
 def evaluate(args):
     model = Model(args.parameters)
     records = list(read(args.input))
-    ll_sum, count = evaluate_model(model, records, *args.bound)
-    print 'BIC: %f (likelihood: %f)' % (bic(ll_sum, count, len(args.parameters.to_vector())), likelihood(ll_sum, count))
-
-
-def likelihood(ll_sum, count):
-    return np.exp(ll_sum / count)
-
-
-def bic(ll_sum, count, parameter_count):
-    return -2 * ll_sum + parameter_count * np.log(count)
+    result = evaluate_model(model, records, *args.bound)
+    for key, value in result.iteritems():
+        print '%s: %f' % (key, value)
 
 
 def tune(args):
     records = list(read(args.input))
     initial_vector = args.parameters.to_vector()
 
-    def bic_func(vector):
+    def func(vector):
         parameters = Parameters.from_vector(vector)
         if not parameters.validate():
             return None
         model = Model(parameters)
-        ll_sum, count = evaluate_model(model, records, *args.bound)
-        return bic(ll_sum, count, len(vector))
+        return -evaluate_model(model, records, *args.bound)['Capital']
 
-    best_vector, best_result = optimize(bic_func, initial_vector, args.tunelimit)
+    best_vector, best_result = optimize(func, initial_vector, args.tunelimit)
     best_parameters = Parameters.from_vector(best_vector)
-    ll = likelihood(*evaluate_model(Model(best_parameters), records, *args.bound))
-    print 'Best BIC: %f (likelihood: %f)' % (best_result, ll)
+    print 'Best result:'
+    result = evaluate_model(Model(best_parameters), records, *args.bound)
+    for key, value in result.iteritems():
+        print '%s: %f' % (key, value)
     json.dump(best_parameters.to_dict(), args.output)
     args.output.write('\n')
-    # for vec in iterate_vectors(initial_vector):
-    #     best_vector = optimize.fmin(func, vec)
-    #     parameters = Parameters.from_vector(best_vector)
-    #     print 'Result:', evaluate_model(Model(parameters), records, *args.bound)
-    #     print 'Parameters:', parameters.to_dict()
 
 
 def optimize(func, initial_vector, limit):
@@ -321,16 +288,6 @@ def optimize(func, initial_vector, limit):
             best_value = value
             print 'New best value:', best_value, Parameters.from_vector(best_vector).to_dict()
     return best_vector, best_value
-
-
-def iterate_vectors(vector):
-    for i in xrange(len(vector)):
-        x = vector[i]
-        vector[i] = 10 * x
-        yield vector
-        vector[i] = x / 10
-        yield vector
-        vector[i] = x
 
 
 def parse_bounds(s):
@@ -363,9 +320,11 @@ def main():
                         help='Check that gradient is correct on every update of the model')
     parser.add_argument('--tunelimit', type=int, default=1,
                         help='Number of times to make leaps from local optima while tuning')
-    # parser.add_argument('--reg', dest='regularizer', type=float, default=0.000000003,
-    #                     help='Regularizer for tuning parameters')
+    parser.add_argument('--seed', type=int,
+                        help='Random seed')
     args = parser.parse_args()
+    if args.seed is not None:
+        np.random.seed(args.seed)
     if args.checkgrad:
         Model.CHECK_GRADIENT = True
     args.func(args)
