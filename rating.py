@@ -6,7 +6,8 @@ import sys
 
 import datetime
 import numpy as np
-import scipy.optimize
+import hyperopt
+from hyperopt import hp
 
 
 #
@@ -39,6 +40,7 @@ def get_setter(collection, key):
     def setter(value):
         assert value == value
         collection[key] = value
+
     return setter
 
 
@@ -95,13 +97,15 @@ class Model(object):
             rating_diff = player1_rating - player2_rating
             scaled_rating_diff = self.parameters.single_weights_sigmoid_scale * rating_diff
             sig = sigmoid(scaled_rating_diff)
-            player1_weight = (1 - sig) * self.parameters.lower_single_weight + sig * self.parameters.higher_single_weight
-            player2_weight = sig * self.parameters.lower_single_weight + (1 - sig) * self.parameters.higher_single_weight
+            player1_weight = ((1 - sig) * self.parameters.lower_single_weight +
+                              sig * self.parameters.higher_single_weight)
+            player2_weight = (sig * self.parameters.lower_single_weight +
+                              (1 - sig) * self.parameters.higher_single_weight)
 
             sig_derivative = sigmoid_derivative(scaled_rating_diff)
             weight_diff = self.parameters.higher_single_weight - self.parameters.lower_single_weight
 
-            team_count = self.team_play_counts[team] + self.parameters.double_prior_weight
+            team_count = self.team_play_counts[team]
             weight_sum = self.parameters.single_weight + team_count
             rating = (self.parameters.single_weight * (player1_weight * player1_rating +
                                                        player2_weight * player2_rating) +
@@ -112,10 +116,12 @@ class Model(object):
                          team_count / weight_sum,
                          self.parameters.double_learning_rate),
                 Variable(player1_rating, get_setter(self.single_ratings, player1),
-                         self.parameters.single_weight / weight_sum * (player1_weight + weight_diff * sig_derivative * scaled_rating_diff),
+                         self.parameters.single_weight / weight_sum * (
+                         player1_weight + weight_diff * sig_derivative * scaled_rating_diff),
                          self.parameters.double_single_learning_rate),
                 Variable(player2_rating, get_setter(self.single_ratings, player2),
-                         self.parameters.single_weight / weight_sum * (player2_weight - weight_diff * sig_derivative * scaled_rating_diff),
+                         self.parameters.single_weight / weight_sum * (
+                         player2_weight - weight_diff * sig_derivative * scaled_rating_diff),
                          self.parameters.double_single_learning_rate)
             ]
 
@@ -142,6 +148,22 @@ class Model(object):
             print >> output, '%s, %s: %.0f' % (player1, player2, value)
 
 
+def normal_from_bounds(label, left_bound, right_bound, hp_space=hp.normal, *args):
+    return hp_space(label, (left_bound + right_bound) / 2, (right_bound - left_bound) / 4, *args)
+
+
+def lognormal_from_bounds(label, left_bound, right_bound):
+    return normal_from_bounds(label, np.log(left_bound), np.log(right_bound), hp.lognormal)
+
+
+def qnormal_from_bounds(label, left_bound, right_bound, q):
+    return normal_from_bounds(label, left_bound, right_bound, hp.qnormal, q)
+
+
+def qlognormal_from_bounds(label, left_bound, right_bound, q):
+    return normal_from_bounds(label, np.log(left_bound), np.log(right_bound), hp.qlognormal, q)
+
+
 class Parameters(object):
     def __init__(self,
                  learning_rate=30 / Model.SIGMOID_SCALE,
@@ -151,8 +173,7 @@ class Parameters(object):
                  higher_single_weight=0.9,
                  lower_single_weight=0.5,
                  single_weights_sigmoid_scale=1,
-                 double_single_learning_rate=30 / Model.SIGMOID_SCALE,
-                 double_prior_weight=1):
+                 double_single_learning_rate=30 / Model.SIGMOID_SCALE):
         self.learning_rate = learning_rate
         self.double_initial_rating = double_initial_rating
         self.double_learning_rate = double_learning_rate
@@ -161,30 +182,20 @@ class Parameters(object):
         self.lower_single_weight = lower_single_weight
         self.single_weights_sigmoid_scale = single_weights_sigmoid_scale
         self.double_single_learning_rate = double_single_learning_rate
-        self.double_prior_weight = double_prior_weight
-
-    def validate(self):
-        return (self.learning_rate > 0 and
-                self.double_initial_rating > 0 and
-                self.double_learning_rate > 0 and
-                self.single_weight >= 0 and
-                self.higher_single_weight >= self.lower_single_weight > 0 and
-                self.single_weights_sigmoid_scale > 0 and
-                self.double_single_learning_rate > 0 and
-                self.double_prior_weight >= 0)
-
-    def to_vector(self):
-        return np.array([self.learning_rate, self.double_initial_rating, self.double_learning_rate, self.single_weight,
-                         self.higher_single_weight, self.lower_single_weight,
-                         self.single_weights_sigmoid_scale,
-                         self.double_single_learning_rate,
-                         self.double_prior_weight])
 
     @staticmethod
-    def from_vector(vector):
-        parameters = Parameters(*vector)
-        assert np.square(parameters.to_vector() - vector).sum() == 0
-        return parameters
+    def get_space():
+        variables = [
+            lognormal_from_bounds('learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
+            qnormal_from_bounds('double_initial_rating', 1250, 2300, 5),
+            lognormal_from_bounds('double_learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
+            lognormal_from_bounds('single_weight', 0.1, 30),
+            qlognormal_from_bounds('higher_single_weight', 0.5, 0.95, 0.01),
+            qlognormal_from_bounds('lower_single_weight', 0.3, 0.9, 0.01),
+            lognormal_from_bounds('single_weights_sigmoid_scale', 0.01, 1),
+            lognormal_from_bounds('double_single_learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE)
+        ]
+        return {var.pos_args[0].arg['label'].obj: var for var in variables}
 
     def to_dict(self):
         return self.__dict__
@@ -217,7 +228,7 @@ def evaluate_model(model, records, start=None, end=None):
             if p_corrected > 0.5:
                 correct_count += 1
             ll_sum += np.log(p_corrected)
-            bet = min(capital, 1)
+            bet = capital
             capital += bet * (p_corrected / ((p_corrected * bet + 0.5) / (bet + 1)) - 1)
             count += 1
         model.update(record)
@@ -257,37 +268,29 @@ def evaluate(args):
 
 def tune(args):
     records = list(read(args.input))
-    initial_vector = args.parameters.to_vector()
 
-    def func(vector):
-        parameters = Parameters.from_vector(vector)
-        if not parameters.validate():
-            return None
+    def func(func_args):
+        parameters = Parameters.from_dict(func_args)
         model = Model(parameters)
-        return -evaluate_model(model, records, *args.bound)['Capital']
+        result = evaluate_model(model, records, *args.bound)
+        result['loss'] = -result[args.tunetarget]
+        result['status'] = hyperopt.STATUS_OK
+        return result
 
-    best_vector, best_result = optimize(func, initial_vector, args.tunelimit)
-    best_parameters = Parameters.from_vector(best_vector)
-    print 'Best result:'
-    result = evaluate_model(Model(best_parameters), records, *args.bound)
-    for key, value in result.iteritems():
-        print '%s: %f' % (key, value)
-    json.dump(best_parameters.to_dict(), args.output)
+    trials = hyperopt.Trials()
+    hyperopt.fmin(func, Parameters.get_space(), algo=hyperopt.tpe.suggest, max_evals=args.max_evals, trials=trials,
+                  rseed=args.seed)
+
+    best_trial = trials.best_trial
+    best_result = best_trial['result']
+    print 'Best results'
+    for key, value in best_result.iteritems():
+        print '%s: %s' % (key, value)
+    best_parameters = {key: value[0] for key, value in best_trial['misc']['vals'].iteritems()}
+    for key, value in best_parameters.iteritems():
+        print '%s: %s' % (key, value)
+    json.dump(best_parameters, args.output)
     args.output.write('\n')
-
-
-def optimize(func, initial_vector, limit):
-    best_vector = initial_vector
-    best_value = func(initial_vector)
-    print 'Initial value:', best_value, Parameters.from_vector(best_vector).to_dict()
-    for _ in xrange(limit):
-        vector = best_vector * np.random.lognormal(0, 1, (len(initial_vector),))
-        opt_vector, value, _, _, _ = scipy.optimize.fmin(func, vector, full_output=True)
-        if best_value is None or value < best_value:
-            best_vector = opt_vector
-            best_value = value
-            print 'New best value:', best_value, Parameters.from_vector(best_vector).to_dict()
-    return best_vector, best_value
 
 
 def parse_bounds(s):
@@ -318,13 +321,14 @@ def main():
                         help='File with model parameters')
     parser.add_argument('--checkgrad', default=False, action='store_true',
                         help='Check that gradient is correct on every update of the model')
-    parser.add_argument('--tunelimit', type=int, default=1,
-                        help='Number of times to make leaps from local optima while tuning')
-    parser.add_argument('--seed', type=int,
+    parser.add_argument('--max_evals', type=int, default=100,
+                        help='Maximal number of function evaluations during tuning')
+    parser.add_argument('--seed', type=int, default=123,
                         help='Random seed')
+    parser.set_defaults(tunetarget='Capital')
+    parser.add_argument('--likelihood', dest='tunetarget', action='store_const', const='Likelihood',
+                        help='Tune likelihood instead of capital')
     args = parser.parse_args()
-    if args.seed is not None:
-        np.random.seed(args.seed)
     if args.checkgrad:
         Model.CHECK_GRADIENT = True
     args.func(args)
