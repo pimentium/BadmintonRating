@@ -12,10 +12,12 @@ from hyperopt import hp
 
 #
 # Ideas:
-# - Hyperopt
+# - Regularization
 # - Product in double rating prediction: a_0 + a_1 * r_1 + a_2 * r_2 + a_3 * r_1^b_1 * r_2^b_2
 # - Use score values
 # - Aggregate by day
+# - Adaptive learning rate
+# - Bet prediction
 #
 
 
@@ -149,7 +151,7 @@ class Model(object):
 
 
 def normal_from_bounds(label, left_bound, right_bound, hp_space=hp.normal, *args):
-    return hp_space(label, (left_bound + right_bound) / 2, (right_bound - left_bound) / 4, *args)
+    return hp_space(label, (left_bound + right_bound) / 2.0, (right_bound - left_bound) / 4.0, *args)
 
 
 def lognormal_from_bounds(label, left_bound, right_bound):
@@ -187,9 +189,9 @@ class Parameters(object):
     def get_space():
         variables = [
             lognormal_from_bounds('learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
-            qnormal_from_bounds('double_initial_rating', 1250, 2300, 5),
+            qnormal_from_bounds('double_initial_rating', 1250, 2300, 10),
             lognormal_from_bounds('double_learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
-            lognormal_from_bounds('single_weight', 0.1, 30),
+            qlognormal_from_bounds('single_weight', 1, 30, 0.1),
             qlognormal_from_bounds('higher_single_weight', 0.5, 0.95, 0.01),
             qlognormal_from_bounds('lower_single_weight', 0.3, 0.9, 0.01),
             lognormal_from_bounds('single_weights_sigmoid_scale', 0.01, 1),
