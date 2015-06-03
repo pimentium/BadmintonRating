@@ -8,7 +8,7 @@ import datetime
 import numpy as np
 import hyperopt
 from hyperopt import hp
-
+from scipy import stats
 
 #
 # Ideas:
@@ -119,11 +119,11 @@ class Model(object):
                          self.parameters.double_learning_rate),
                 Variable(player1_rating, get_setter(self.single_ratings, player1),
                          self.parameters.single_weight / weight_sum * (
-                         player1_weight + weight_diff * sig_derivative * scaled_rating_diff),
+                             player1_weight + weight_diff * sig_derivative * scaled_rating_diff),
                          self.parameters.double_single_learning_rate),
                 Variable(player2_rating, get_setter(self.single_ratings, player2),
                          self.parameters.single_weight / weight_sum * (
-                         player2_weight - weight_diff * sig_derivative * scaled_rating_diff),
+                             player2_weight - weight_diff * sig_derivative * scaled_rating_diff),
                          self.parameters.double_single_learning_rate)
             ]
 
@@ -150,54 +150,53 @@ class Model(object):
             print >> output, '%s, %s: %.0f' % (player1, player2, value)
 
 
-def normal_from_bounds(label, left_bound, right_bound, hp_space=hp.normal, *args):
-    return hp_space(label, (left_bound + right_bound) / 2.0, (right_bound - left_bound) / 4.0, *args)
+class Parameter(object):
+    def __init__(self, label, default_value, hp_variable, log_pdf):
+        self.label = label
+        self.default_value = default_value
+        self.hp_variable = hp_variable
+        self.log_pdf = log_pdf
 
+    @staticmethod
+    def normal_from_bounds(label, left_bound, right_bound, quantization=None):
+        mean = (left_bound + right_bound) / 2.0
+        sigma = (right_bound - left_bound) / 4.0
+        hp_variable = (hp.normal(label, mean, sigma) if quantization is None
+                       else hp.qnormal(label, mean, sigma, quantization))
+        return Parameter(label, mean, hp_variable, stats.norm(mean, sigma).logpdf)
 
-def lognormal_from_bounds(label, left_bound, right_bound):
-    return normal_from_bounds(label, np.log(left_bound), np.log(right_bound), hp.lognormal)
-
-
-def qnormal_from_bounds(label, left_bound, right_bound, q):
-    return normal_from_bounds(label, left_bound, right_bound, hp.qnormal, q)
-
-
-def qlognormal_from_bounds(label, left_bound, right_bound, q):
-    return normal_from_bounds(label, np.log(left_bound), np.log(right_bound), hp.qlognormal, q)
+    @staticmethod
+    def log_normal_from_bounds(label, left_bound, right_bound, quantization=None):
+        log_left_bound = np.log(left_bound)
+        log_right_bound = np.log(right_bound)
+        log_mean = (log_left_bound + log_right_bound) / 2.0
+        log_sigma = (log_right_bound - log_left_bound) / 4.0
+        mean = np.exp(log_mean)
+        hp_variable = (hp.lognormal(label, log_mean, log_sigma) if quantization is None
+                       else hp.qlognormal(label, log_mean, log_sigma, quantization))
+        return Parameter(label, mean, hp_variable, stats.lognorm(log_sigma, scale=mean).logpdf)
 
 
 class Parameters(object):
-    def __init__(self,
-                 learning_rate=30 / Model.SIGMOID_SCALE,
-                 double_initial_rating=1500,
-                 double_learning_rate=30 / Model.SIGMOID_SCALE,
-                 single_weight=1,
-                 higher_single_weight=0.9,
-                 lower_single_weight=0.5,
-                 single_weights_sigmoid_scale=1,
-                 double_single_learning_rate=30 / Model.SIGMOID_SCALE):
-        self.learning_rate = learning_rate
-        self.double_initial_rating = double_initial_rating
-        self.double_learning_rate = double_learning_rate
-        self.single_weight = single_weight
-        self.higher_single_weight = higher_single_weight
-        self.lower_single_weight = lower_single_weight
-        self.single_weights_sigmoid_scale = single_weights_sigmoid_scale
-        self.double_single_learning_rate = double_single_learning_rate
+    PARAMETERS = [
+        Parameter.normal_from_bounds('learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
+        Parameter.normal_from_bounds('double_initial_rating', 1250, 2300),
+        Parameter.log_normal_from_bounds('double_learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
+        Parameter.log_normal_from_bounds('single_weight', 1, 30),
+        Parameter.log_normal_from_bounds('higher_single_weight', 0.5, 0.95),
+        Parameter.log_normal_from_bounds('lower_single_weight', 0.3, 0.9),
+        Parameter.log_normal_from_bounds('single_weights_sigmoid_scale', 0.01, 1),
+        Parameter.log_normal_from_bounds('double_single_learning_rate',
+                                         10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE)
+    ]
+
+    def __init__(self, **kwargs):
+        for parameter in Parameters.PARAMETERS:
+            setattr(self, parameter.label, kwargs.get(parameter.label, parameter.default_value))
 
     @staticmethod
     def get_space():
-        variables = [
-            lognormal_from_bounds('learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
-            qnormal_from_bounds('double_initial_rating', 1250, 2300, 10),
-            lognormal_from_bounds('double_learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
-            qlognormal_from_bounds('single_weight', 1, 30, 0.1),
-            qlognormal_from_bounds('higher_single_weight', 0.5, 0.95, 0.01),
-            qlognormal_from_bounds('lower_single_weight', 0.3, 0.9, 0.01),
-            lognormal_from_bounds('single_weights_sigmoid_scale', 0.01, 1),
-            lognormal_from_bounds('double_single_learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE)
-        ]
-        return {var.pos_args[0].arg['label'].obj: var for var in variables}
+        return {parameter.label: parameter.hp_variable for parameter in Parameters.PARAMETERS}
 
     def to_dict(self):
         return self.__dict__
@@ -205,6 +204,9 @@ class Parameters(object):
     @staticmethod
     def from_dict(d):
         return Parameters(**d)
+
+    def log_pdf(self):
+        return sum(parameter.log_pdf(getattr(self, parameter.label)) for parameter in Parameters.PARAMETERS)
 
 
 def sigmoid(x):
@@ -216,13 +218,13 @@ def sigmoid_derivative(x):
     return exp / (1 + exp) ** 2
 
 
-def evaluate_model(model, records, start=None, end=None):
+def evaluate_model(model, records, valid_range=None):
     count = 0
     ll_sum = 0.0
     correct_count = 0
     capital = 1.0
     for index, record in enumerate(records):
-        if (start is None or index >= start) and (end is None or index < end):
+        if valid_range is None or valid_range(index):
             p = model.predict(record.first_team, record.second_team, record.date)
             assert 0 <= p <= 1
             assert record.first_score != record.second_score
@@ -234,7 +236,20 @@ def evaluate_model(model, records, start=None, end=None):
             capital += bet * (p_corrected / ((p_corrected * bet + 0.5) / (bet + 1)) - 1)
             count += 1
         model.update(record)
-    return {'Likelihood': np.exp(ll_sum / count), 'Precision': float(correct_count) / count, 'Capital': capital}
+    return {
+        'Count': count,
+        'LogLikelihood': ll_sum / count,
+        'Likelihood': np.exp(ll_sum / count),
+        'Precision': float(correct_count) / count,
+        'Capital': capital
+    }
+
+
+def evaluate_parameters(parameters, records, valid_range=None):
+    model = Model(parameters)
+    result = evaluate_model(model, records, valid_range)
+    result['ParametersLogPDF'] = parameters.log_pdf()
+    return result
 
 
 def read(filename):
@@ -261,43 +276,85 @@ def process(args):
 
 
 def evaluate(args):
-    model = Model(args.parameters)
-    records = list(read(args.input))
-    result = evaluate_model(model, records, *args.bound)
+    result = evaluate_parameters(args.parameters, read(args.input), args.range)
     for key, value in result.iteritems():
-        print '%s: %f' % (key, value)
+        print '%s: %s' % (key, value)
 
 
 def tune(args):
     records = list(read(args.input))
-
-    def func(func_args):
-        parameters = Parameters.from_dict(func_args)
-        model = Model(parameters)
-        result = evaluate_model(model, records, *args.bound)
-        result['loss'] = -result[args.tunetarget]
-        result['status'] = hyperopt.STATUS_OK
-        return result
-
-    trials = hyperopt.Trials()
-    hyperopt.fmin(func, Parameters.get_space(), algo=hyperopt.tpe.suggest, max_evals=args.max_evals, trials=trials,
-                  rseed=args.seed)
-
-    best_trial = trials.best_trial
-    best_result = best_trial['result']
+    best_parameters, best_result = tune_parameters(records, args.range, args.regularizer, args.tunetarget,
+                                                   args.max_evals, args.seed)
     print 'Best results'
     for key, value in best_result.iteritems():
         print '%s: %s' % (key, value)
-    best_parameters = {key: value[0] for key, value in best_trial['misc']['vals'].iteritems()}
     for key, value in best_parameters.iteritems():
         print '%s: %s' % (key, value)
     json.dump(best_parameters, args.output)
     args.output.write('\n')
 
 
-def parse_bounds(s):
+def tune_parameters(records, valid_range, regularizer, tune_target, max_evals, random_seed):
+    def func(func_args):
+        parameters = Parameters.from_dict(func_args)
+        result = evaluate_parameters(parameters, records, valid_range)
+        result['loss'] = -result[tune_target] - regularizer * result['ParametersLogPDF']
+        result['status'] = hyperopt.STATUS_OK
+        return result
+
+    trials = hyperopt.Trials()
+    hyperopt.fmin(func, Parameters.get_space(), algo=hyperopt.tpe.suggest, max_evals=max_evals, trials=trials,
+                  rseed=random_seed)
+    best_trial = trials.best_trial
+    best_parameters = {key: value[0] for key, value in best_trial['misc']['vals'].iteritems()}
+    best_result = best_trial['result']
+    return best_parameters, best_result
+
+
+def cross_validate(args):
+    records = list(read(args.input))
+    average_result = None
+    whole_range = range(len(records))
+    if args.range is not None:
+        whole_range = [i for i in whole_range if args.range(i)]
+    fold_count = args.folds
+    fold_range_len = len(whole_range) / fold_count
+    for fold in xrange(fold_count):
+        fold_range = whole_range[fold * fold_range_len:(fold + 1) * fold_range_len]
+        print '.',
+        sys.stdout.flush()
+        # print 'Fold %d: [%d, %d]' % (fold, fold_range[0], fold_range[-1])
+        parameters, _ = tune_parameters(
+            records,
+            lambda j: j in whole_range and j not in fold_range,
+            args.regularizer, args.tunetarget, args.max_evals, args.seed)
+        result = evaluate_parameters(Parameters.from_dict(parameters), records, lambda j: j in fold_range)
+        # for key, value in result.iteritems():
+        #     print '%s: %s' % (key, value)
+        # print
+        if average_result is None:
+            average_result = {key: 0 for key in result.iterkeys()}
+        for key in result.iterkeys():
+            average_result[key] += float(result[key]) / fold_count
+    print
+    # print 'Average results'
+    for key, value in average_result.iteritems():
+        print '%s: %s' % (key, value)
+
+
+def parse_range(s):
     start, end = s.split(':')
-    return int(start) if start else None, int(end) if end else None
+    if start and end:
+        start = int(start)
+        end = int(start)
+        return lambda i: start <= i < end
+    if start:
+        start = int(start)
+        return lambda i: start <= i
+    if end:
+        end = int(end)
+        return lambda i: i < end
+    return None
 
 
 def read_parameters(filename):
@@ -317,8 +374,10 @@ def main():
                         help='Evaluate model')
     parser.add_argument('--tune', dest='func', action='store_const', const=tune,
                         help='Tune model parameters')
-    parser.add_argument('--bound', type=parse_bounds, default=(None, None),
-                        help='Bounds for input records, <start>:<end>')
+    parser.add_argument('--cv', dest='func', action='store_const', const=cross_validate,
+                        help='Run cross validation on tuning')
+    parser.add_argument('--range', type=parse_range,
+                        help='Range of input records to evaluate, <start>:<end>')
     parser.add_argument('--params', dest='parameters', type=read_parameters, default=Parameters(),
                         help='File with model parameters')
     parser.add_argument('--checkgrad', default=False, action='store_true',
@@ -328,9 +387,14 @@ def main():
     parser.add_argument('--seed', type=int, default=123,
                         help='Random seed')
     parser.set_defaults(tunetarget='Capital')
-    parser.add_argument('--likelihood', dest='tunetarget', action='store_const', const='Likelihood',
-                        help='Tune likelihood instead of capital')
+    parser.add_argument('--ll', dest='tunetarget', action='store_const', const='LogLikelihood',
+                        help='Tune log-likelihood instead of capital')
+    parser.add_argument('--reg', dest='regularizer', type=float, default=0.0,
+                        help='Regularizer used in tuning')
+    parser.add_argument('--folds', type=int, default=10,
+                        help='Number of folds for cross-validation')
     args = parser.parse_args()
+    np.random.seed(args.seed)
     if args.checkgrad:
         Model.CHECK_GRADIENT = True
     args.func(args)
