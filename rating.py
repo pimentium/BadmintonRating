@@ -2,9 +2,11 @@
 import argparse
 import json
 import collections
+import multiprocessing
 import sys
 
 import datetime
+import itertools
 import numpy as np
 import hyperopt
 from hyperopt import hp
@@ -179,7 +181,7 @@ class Parameter(object):
 
 class Parameters(object):
     PARAMETERS = [
-        Parameter.normal_from_bounds('learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
+        Parameter.log_normal_from_bounds('learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
         Parameter.normal_from_bounds('double_initial_rating', 1250, 2300),
         Parameter.log_normal_from_bounds('double_learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
         Parameter.log_normal_from_bounds('single_weight', 1, 30),
@@ -311,6 +313,16 @@ def tune_parameters(records, valid_range, regularizer, tune_target, max_evals, r
     return best_parameters, best_result
 
 
+def evaluate_fold(params):
+    fold, records, whole_range, fold_range_len, args = params
+    fold_range = whole_range[fold * fold_range_len:(fold + 1) * fold_range_len]
+    parameters, _ = tune_parameters(
+        records,
+        lambda j: j in whole_range and j not in fold_range,
+        args.regularizer, args.tunetarget, args.max_evals, args.seed)
+    return evaluate_parameters(Parameters.from_dict(parameters), records, lambda j: j in fold_range)
+
+
 def cross_validate(args):
     records = list(read(args.input))
     average_result = None
@@ -319,25 +331,20 @@ def cross_validate(args):
         whole_range = [i for i in whole_range if args.range(i)]
     fold_count = args.folds
     fold_range_len = len(whole_range) / fold_count
-    for fold in xrange(fold_count):
-        fold_range = whole_range[fold * fold_range_len:(fold + 1) * fold_range_len]
-        print '.',
-        sys.stdout.flush()
-        # print 'Fold %d: [%d, %d]' % (fold, fold_range[0], fold_range[-1])
-        parameters, _ = tune_parameters(
-            records,
-            lambda j: j in whole_range and j not in fold_range,
-            args.regularizer, args.tunetarget, args.max_evals, args.seed)
-        result = evaluate_parameters(Parameters.from_dict(parameters), records, lambda j: j in fold_range)
-        # for key, value in result.iteritems():
-        #     print '%s: %s' % (key, value)
-        # print
+
+    params = [(fold, records, whole_range, fold_range_len, args) for fold in xrange(fold_count)]
+    if args.threads is None:
+        results = map(evaluate_fold, params)
+    else:
+        pool = multiprocessing.Pool(args.threads)
+        results = pool.map(evaluate_fold, params)
+
+    for result in results:
         if average_result is None:
             average_result = {key: 0 for key in result.iterkeys()}
         for key in result.iterkeys():
             average_result[key] += float(result[key]) / fold_count
-    print
-    # print 'Average results'
+
     for key, value in average_result.iteritems():
         print '%s: %s' % (key, value)
 
@@ -393,6 +400,8 @@ def main():
                         help='Regularizer used in tuning')
     parser.add_argument('--folds', type=int, default=10,
                         help='Number of folds for cross-validation')
+    parser.add_argument('--threads', '-j', type=int,
+                        help='Number of threads for cross-validation')
     args = parser.parse_args()
     np.random.seed(args.seed)
     if args.checkgrad:
