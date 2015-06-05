@@ -6,15 +6,14 @@ import multiprocessing
 import sys
 
 import datetime
-import itertools
 import numpy as np
 import hyperopt
 from hyperopt import hp
 from scipy import stats
 
+
 #
 # Ideas:
-# - Regularization
 # - Product in double rating prediction: a_0 + a_1 * r_1 + a_2 * r_2 + a_3 * r_1^b_1 * r_2^b_2
 # - Use score values
 # - Aggregate by day
