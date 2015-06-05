@@ -14,7 +14,6 @@ from scipy import stats
 
 #
 # Ideas:
-# - Product in double rating prediction: a_0 + a_1 * r_1 + a_2 * r_2 + a_3 * r_1^b_1 * r_2^b_2
 # - Use score values
 # - Aggregate by day
 # - Adaptive learning rate
@@ -86,10 +85,11 @@ class Model(object):
         return rating, update
 
     def get_team_rating_and_variables(self, team):
+        parameters = self.parameters
         if len(team) == 1:
             player = team[0]
             rating = self.single_ratings[player]
-            return rating, [Variable(rating, get_setter(self.single_ratings, player), 1, self.parameters.learning_rate)]
+            return rating, [Variable(rating, get_setter(self.single_ratings, player), 1, parameters.learning_rate)]
         else:
             team = tuple(sorted(team))
             proper_rating = self.double_ratings[team]
@@ -98,34 +98,34 @@ class Model(object):
             player2_rating = self.single_ratings[player2]
 
             rating_diff = player1_rating - player2_rating
-            scaled_rating_diff = self.parameters.single_weights_sigmoid_scale * rating_diff
+            scaled_rating_diff = parameters.single_weights_sigmoid_scale * rating_diff
             sig = sigmoid(scaled_rating_diff)
-            player1_weight = ((1 - sig) * self.parameters.lower_single_weight +
-                              sig * self.parameters.higher_single_weight)
-            player2_weight = (sig * self.parameters.lower_single_weight +
-                              (1 - sig) * self.parameters.higher_single_weight)
+            player1_weight = ((1 - sig) * parameters.lower_single_weight +
+                              sig * parameters.higher_single_weight)
+            player2_weight = (sig * parameters.lower_single_weight +
+                              (1 - sig) * parameters.higher_single_weight)
 
             sig_derivative = sigmoid_derivative(scaled_rating_diff)
-            weight_diff = self.parameters.higher_single_weight - self.parameters.lower_single_weight
+            weight_diff = parameters.higher_single_weight - parameters.lower_single_weight
 
             team_count = self.team_play_counts[team]
-            weight_sum = self.parameters.single_weight + team_count
-            rating = (self.parameters.single_weight * (player1_weight * player1_rating +
-                                                       player2_weight * player2_rating) +
+            weight_sum = parameters.single_weight + team_count
+            rating = (parameters.single_weight * (player1_weight * player1_rating + player2_weight * player2_rating +
+                                                  parameters.double_rating_shift) +
                       team_count * proper_rating) / weight_sum
 
             return rating, [
                 Variable(proper_rating, get_setter(self.double_ratings, team),
                          team_count / weight_sum,
-                         self.parameters.double_learning_rate),
+                         parameters.double_learning_rate),
                 Variable(player1_rating, get_setter(self.single_ratings, player1),
-                         self.parameters.single_weight / weight_sum * (
+                         parameters.single_weight / weight_sum * (
                              player1_weight + weight_diff * sig_derivative * scaled_rating_diff),
-                         self.parameters.double_single_learning_rate),
+                         parameters.double_single_learning_rate),
                 Variable(player2_rating, get_setter(self.single_ratings, player2),
-                         self.parameters.single_weight / weight_sum * (
+                         parameters.single_weight / weight_sum * (
                              player2_weight - weight_diff * sig_derivative * scaled_rating_diff),
-                         self.parameters.double_single_learning_rate)
+                         parameters.double_single_learning_rate)
             ]
 
     def check_gradient(self, team, variables):
@@ -186,6 +186,7 @@ class Parameters(object):
         Parameter.log_normal_from_bounds('single_weight', 1, 30),
         Parameter.log_normal_from_bounds('higher_single_weight', 0.5, 0.95),
         Parameter.log_normal_from_bounds('lower_single_weight', 0.3, 0.9),
+        Parameter.normal_from_bounds('double_rating_shift', -500, 100),
         Parameter.log_normal_from_bounds('single_weights_sigmoid_scale', 0.01, 1),
         Parameter.log_normal_from_bounds('double_single_learning_rate',
                                          10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE)
