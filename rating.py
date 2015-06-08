@@ -324,7 +324,6 @@ def evaluate_fold(params):
 
 def cross_validate(args):
     records = list(read(args.input))
-    average_result = None
     whole_range = range(len(records))
     if args.range is not None:
         whole_range = [i for i in whole_range if args.range(i)]
@@ -338,14 +337,28 @@ def cross_validate(args):
         pool = multiprocessing.Pool(args.threads)
         results = pool.map(evaluate_fold, params)
 
+    all_results = None
     for result in results:
-        if average_result is None:
-            average_result = {key: 0 for key in result.iterkeys()}
+        if all_results is None:
+            all_results = {key: [] for key in result.iterkeys()}
         for key in result.iterkeys():
-            average_result[key] += float(result[key]) / fold_count
+            all_results[key].append(result[key])
+    all_results = {key: np.array(values) for key, values in all_results.iteritems()}
 
-    for key, value in average_result.iteritems():
-        print '%s: %s' % (key, value)
+    bootstrap_count = 1000
+    bootstrapped_results = {key: [] for key in all_results.iterkeys()}
+    for i in xrange(bootstrap_count):
+        indexes = np.random.choice(len(results), len(results), replace=True)
+        for key, values in all_results.iteritems():
+            bootstrapped_results[key].append(values[indexes].mean())
+
+    left_percentile, right_percentile = 5, 95
+    print '[%d%%, %d%%] confidence intervals' % (left_percentile, right_percentile)
+    for key, values in bootstrapped_results.iteritems():
+        values.sort()
+        print '%s: [%f, %f]' % (key,
+                                values[left_percentile * len(values) / 100],
+                                values[right_percentile * len(values) / 100])
 
 
 def parse_range(s):
