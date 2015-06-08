@@ -16,7 +16,7 @@ from scipy import stats
 # Ideas:
 # - Use score values
 # - Aggregate by day
-# - Adaptive learning rate
+# - Normal variables (uncorrelated / correlated)
 # - Bet prediction
 #
 
@@ -31,19 +31,20 @@ class Record(object):
 
 
 class Variable(object):
-    def __init__(self, value, setter, partial_derivative, learning_rate):
-        self.value = value
-        self.setter = setter
+    def __init__(self, updater, partial_derivative, learning_rate):
+        self.updater = updater
         self.partial_derivative = partial_derivative
         self.learning_rate = learning_rate
 
+    def update(self, delta):
+        self.updater(self.learning_rate * self.partial_derivative * delta)
 
-def get_setter(collection, key):
-    def setter(value):
-        assert value == value
-        collection[key] = value
 
-    return setter
+def get_updater(collection, key):
+    def updater(value):
+        collection[key] += value
+
+    return updater
 
 
 class Model(object):
@@ -79,7 +80,7 @@ class Model(object):
 
         def update(derivative):
             for variable in variables:
-                variable.setter(variable.value + variable.learning_rate * variable.partial_derivative * derivative)
+                variable.update(derivative)
             self.team_play_counts[tuple(sorted(team))] += 1
 
         return rating, update
@@ -89,11 +90,12 @@ class Model(object):
         if len(team) == 1:
             player = team[0]
             rating = self.single_ratings[player]
-            return rating, [Variable(rating, get_setter(self.single_ratings, player), 1, parameters.learning_rate)]
+            return rating, [Variable(get_updater(self.single_ratings, player), 1, parameters.learning_rate)]
         else:
             team = tuple(sorted(team))
             proper_rating = self.double_ratings[team]
             player1, player2 = team
+            assert player1 != player2
             player1_rating = self.single_ratings[player1]
             player2_rating = self.single_ratings[player2]
 
@@ -115,14 +117,14 @@ class Model(object):
                       team_count * proper_rating) / weight_sum
 
             return rating, [
-                Variable(proper_rating, get_setter(self.double_ratings, team),
+                Variable(get_updater(self.double_ratings, team),
                          team_count / weight_sum,
                          parameters.double_learning_rate),
-                Variable(player1_rating, get_setter(self.single_ratings, player1),
+                Variable(get_updater(self.single_ratings, player1),
                          parameters.single_weight / weight_sum * (
                              player1_weight + weight_diff * sig_derivative * scaled_rating_diff),
                          parameters.double_single_learning_rate),
-                Variable(player2_rating, get_setter(self.single_ratings, player2),
+                Variable(get_updater(self.single_ratings, player2),
                          parameters.single_weight / weight_sum * (
                              player2_weight - weight_diff * sig_derivative * scaled_rating_diff),
                          parameters.double_single_learning_rate)
@@ -130,12 +132,11 @@ class Model(object):
 
     def check_gradient(self, team, variables):
         for variable in variables:
-            old_value = variable.value
-            variable.setter(old_value - 1e-7)
+            variable.updater(-1e-7)
             low_rating, _ = self.get_team_rating_and_variables(team)
-            variable.setter(old_value + 1e-7)
+            variable.updater(+2e-7)
             high_rating, _ = self.get_team_rating_and_variables(team)
-            variable.setter(old_value)
+            variable.updater(-1e-7)
             if abs((high_rating - low_rating) / 2e-7 - variable.partial_derivative) > 1e-5:
                 self.get_team_rating_and_variables(team)
             assert abs((high_rating - low_rating) / 2e-7 - variable.partial_derivative) < 1e-5
@@ -330,7 +331,7 @@ def cross_validate(args):
     if args.range is not None:
         whole_range = [i for i in whole_range if args.range(i)]
     fold_count = args.folds
-    fold_range_len = len(whole_range) / fold_count
+    fold_range_len = (len(whole_range) + fold_count - 1) / fold_count
 
     params = [(fold, records, whole_range, fold_range_len, args) for fold in xrange(fold_count)]
     if args.threads is None:
