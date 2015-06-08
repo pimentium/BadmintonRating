@@ -3,6 +3,7 @@ import argparse
 import json
 import collections
 import multiprocessing
+import random
 import sys
 
 import datetime
@@ -14,6 +15,9 @@ from scipy import stats
 
 #
 # Ideas:
+# - --compare-to
+# - Bet_p optimization
+# - Playing with parameters
 # - Use score values
 # - Aggregate by day
 # - Normal variables (uncorrelated / correlated)
@@ -325,6 +329,7 @@ def evaluate_fold(params):
 def cross_validate(args):
     records = list(read(args.input))
     whole_range = range(len(records))
+    random.shuffle(whole_range)
     if args.range is not None:
         whole_range = [i for i in whole_range if args.range(i)]
     fold_count = args.folds
@@ -353,7 +358,7 @@ def cross_validate(args):
             bootstrapped_results[key].append(values[indexes].mean())
 
     left_percentile, right_percentile = 5, 95
-    print '[%d%%, %d%%] confidence intervals' % (left_percentile, right_percentile)
+    print '[%d%%, %d%%] confidence intervals:' % (left_percentile, right_percentile)
     for key, values in bootstrapped_results.iteritems():
         values.sort()
         print '%s: [%f, %f]' % (key,
@@ -405,9 +410,9 @@ def main():
                         help='Maximal number of function evaluations during tuning')
     parser.add_argument('--seed', type=int, default=123,
                         help='Random seed')
-    parser.set_defaults(tunetarget='Capital')
-    parser.add_argument('--ll', dest='tunetarget', action='store_const', const='LogLikelihood',
-                        help='Tune log-likelihood instead of capital')
+    parser.set_defaults(tunetarget='LogLikelihood')
+    parser.add_argument('--capital', dest='tunetarget', action='store_const', const='Capital',
+                        help='Tune capital instead of log-likelihood')
     parser.add_argument('--reg', dest='regularizer', type=float, default=0.0,
                         help='Regularizer used in tuning')
     parser.add_argument('--folds', type=int, default=10,
@@ -416,6 +421,7 @@ def main():
                         help='Number of threads for cross-validation')
     args = parser.parse_args()
     np.random.seed(args.seed)
+    random.seed(args.seed)
     if args.checkgrad:
         Model.CHECK_GRADIENT = True
     args.func(args)
