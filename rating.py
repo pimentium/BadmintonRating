@@ -59,19 +59,18 @@ class Model(object):
         self.double_ratings = collections.defaultdict(lambda: self.parameters.double_initial_rating)
         self.team_play_counts = collections.Counter()
 
-    def predict(self, first_team, second_team, date):
-        first_rating, _ = self.get_team_rating_and_updater(first_team)
-        second_rating, _ = self.get_team_rating_and_updater(second_team)
-        return sigmoid(Model.SIGMOID_SCALE * (first_rating - second_rating))
+    def predict_and_update(self, first_team, second_team, date):
+        first_rating, first_updater = self.get_team_rating_and_updater(first_team)
+        second_rating, second_updater = self.get_team_rating_and_updater(second_team)
 
-    def update(self, record):
-        first_rating, first_updater = self.get_team_rating_and_updater(record.first_team)
-        second_rating, second_updater = self.get_team_rating_and_updater(record.second_team)
-        delta = first_rating - second_rating
-        sign = 1 if record.first_score > record.second_score else -1
-        derivative = sigmoid(-sign * Model.SIGMOID_SCALE * delta)
-        first_updater(sign * Model.SIGMOID_SCALE * derivative)
-        second_updater(-sign * Model.SIGMOID_SCALE * derivative)
+        def update(first_score, second_score):
+            delta = first_rating - second_rating
+            sign = 1 if first_score > second_score else -1
+            derivative = sigmoid(-sign * Model.SIGMOID_SCALE * delta)
+            first_updater(sign * Model.SIGMOID_SCALE * derivative)
+            second_updater(-sign * Model.SIGMOID_SCALE * derivative)
+
+        return sigmoid(Model.SIGMOID_SCALE * (first_rating - second_rating)), update
 
     def get_team_rating_and_updater(self, team):
         rating, variables = self.get_team_rating_and_variables(team)
@@ -227,8 +226,8 @@ def evaluate_model(model, records, valid_range=None):
     correct_count = 0
     capital = 1.0
     for index, record in enumerate(records):
+        p, update = model.predict_and_update(record.first_team, record.second_team, record.date)
         if valid_range is None or valid_range(index):
-            p = model.predict(record.first_team, record.second_team, record.date)
             assert 0 <= p <= 1
             assert record.first_score != record.second_score
             p_corrected = p if record.first_score > record.second_score else 1 - p
@@ -238,12 +237,12 @@ def evaluate_model(model, records, valid_range=None):
             bet = capital
             capital += bet * (p_corrected / ((p_corrected * bet + 0.5) / (bet + 1)) - 1)
             count += 1
-        model.update(record)
+        update(record.first_score, record.second_score)
     return {
         'Count': count,
-        'LogLikelihood': ll_sum / count,
-        'Likelihood': np.exp(ll_sum / count),
-        'Precision': float(correct_count) / count,
+        'LogLikelihood': ll_sum / count if count else 0,
+        'Likelihood': np.exp(ll_sum / count) if count else 1,
+        'Precision': float(correct_count) / count if count else 1,
         'Capital': capital
     }
 
@@ -271,8 +270,7 @@ def read(filename):
 def process(args):
     model = Model(args.parameters)
     records = read(args.input)
-    for record in records:
-        model.update(record)
+    evaluate_model(model, records, lambda i: False)
     model.print_info(args.output)
     if args.output is not sys.stdout:
         print 'Ratings are saved in', args.output
