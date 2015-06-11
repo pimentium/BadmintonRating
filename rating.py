@@ -7,6 +7,7 @@ import random
 import sys
 
 import datetime
+import itertools
 import numpy as np
 import hyperopt
 from hyperopt import hp
@@ -15,7 +16,6 @@ from scipy import stats
 
 #
 # Ideas:
-# - --compare-to
 # - Bet_p optimization
 # - Playing with parameters
 # - Use score values
@@ -225,35 +225,38 @@ def sigmoid_derivative(x):
 
 
 def evaluate_model(model, records, valid_range=None):
-    count = 0
-    ll_sum = 0.0
-    correct_count = 0
-    capital = 1.0
+    probabilities = []
     for index, record in enumerate(records):
         p, update = model.predict_and_update(record.first_team, record.second_team, record.date)
         if valid_range is None or valid_range(index):
             assert 0 <= p <= 1
             assert record.first_score != record.second_score
-            p_corrected = p if record.first_score > record.second_score else 1 - p
-            if p_corrected > 0.5:
-                correct_count += 1
-            ll_sum += np.log(p_corrected)
-            bet = capital
-            capital += bet * (p_corrected / ((p_corrected * bet + 0.5) / (bet + 1)) - 1)
-            count += 1
+            probabilities.append(p if record.first_score > record.second_score else 1 - p)
         update(record.first_score, record.second_score)
+    return probabilities
+
+
+def calc_metrics(probabilities):
+    probabilities = np.array(probabilities, copy=False)
+    count = len(probabilities)
+    log_likelihood = np.log(probabilities).mean()
+    capital = 1.0
+    for p in probabilities:
+        bet = capital
+        capital += bet * (p / ((p * bet + 0.5) / (bet + 1)) - 1)
     return {
         'Count': count,
-        'LogLikelihood': ll_sum / count if count else 0,
-        'Likelihood': np.exp(ll_sum / count) if count else 1,
-        'Precision': float(correct_count) / count if count else 1,
+        'LogLikelihood': log_likelihood,
+        'Likelihood': np.exp(log_likelihood),
+        'Precision': float(np.sum(probabilities > 0.5)) / count,
         'Capital': capital
     }
 
 
 def evaluate_parameters(parameters, records, valid_range=None):
     model = Model(parameters)
-    result = evaluate_model(model, records, valid_range)
+    probabilities = evaluate_model(model, records, valid_range)
+    result = calc_metrics(probabilities)
     result['ParametersLogPDF'] = parameters.log_pdf()
     return result
 
@@ -275,8 +278,9 @@ def process(args):
     model = Model(args.parameters)
     records = read(args.input)
     evaluate_model(model, records, lambda i: False)
-    model.print_info(args.output)
-    if args.output is not sys.stdout:
+    output = open(args.output, 'w') if args.output is not None else sys.stdout
+    model.print_info(output)
+    if args.output is not None:
         print 'Ratings are saved in', args.output
 
 
@@ -295,8 +299,10 @@ def tune(args):
         print '%s: %s' % (key, value)
     for key, value in best_parameters.iteritems():
         print '%s: %s' % (key, value)
-    json.dump(best_parameters, args.output)
-    args.output.write('\n')
+    if args.output is not None:
+        with open(args.output, 'w') as output:
+            json.dump(best_parameters, output)
+            output.write('\n')
 
 
 def tune_parameters(records, valid_range, regularizer, tune_target, max_evals, random_seed):
@@ -318,12 +324,15 @@ def tune_parameters(records, valid_range, regularizer, tune_target, max_evals, r
 
 def evaluate_fold(params):
     fold, records, whole_range, fold_range_len, args = params
-    fold_range = whole_range[fold * fold_range_len:(fold + 1) * fold_range_len]
+    fold_range = set(whole_range[fold * fold_range_len:(fold + 1) * fold_range_len])
+    tune_range = set(whole_range) - set(fold_range)
     parameters, _ = tune_parameters(
         records,
-        lambda j: j in whole_range and j not in fold_range,
+        lambda j: j in tune_range,
         args.regularizer, args.tunetarget, args.max_evals, args.seed)
-    return evaluate_parameters(Parameters.from_dict(parameters), records, lambda j: j in fold_range)
+    model = Model(Parameters.from_dict(parameters))
+    probabilities = evaluate_model(model, records, lambda j: j in fold_range)
+    return zip(sorted(fold_range), probabilities)
 
 
 def cross_validate(args):
@@ -342,20 +351,38 @@ def cross_validate(args):
         pool = multiprocessing.Pool(args.threads)
         results = pool.map(evaluate_fold, params)
 
-    all_results = None
-    for result in results:
-        if all_results is None:
-            all_results = {key: [] for key in result.iterkeys()}
-        for key in result.iterkeys():
-            all_results[key].append(result[key])
-    all_results = {key: np.array(values) for key, values in all_results.iteritems()}
+    all_results = sorted(itertools.chain.from_iterable(results))
+    if args.output is not None:
+        with open(args.output, 'w') as output:
+            for pair in all_results:
+                print >> output, '%d\t%f' % pair
+
+    probabilities = np.array(all_results, copy=False)[:, 1]
+    count = len(probabilities)
+
+    compare_probabilities = None
+    if args.compare_to is not None:
+        compare_probabilities = []
+        for line in args.compare_to:
+            index, prob = line.rstrip().split()
+            index = int(index)
+            prob = float(prob)
+            compare_probabilities.append((index, prob))
+        compare_probabilities.sort()
+        assert [i for i, p in compare_probabilities] == [i for i, p in all_results], 'Different ranges'
+        compare_probabilities = np.array(compare_probabilities, copy=False)[:, 1]
 
     bootstrap_count = 1000
-    bootstrapped_results = {key: [] for key in all_results.iterkeys()}
+    bootstrapped_results = collections.defaultdict(lambda: [])
     for i in xrange(bootstrap_count):
-        indexes = np.random.choice(len(results), len(results), replace=True)
-        for key, values in all_results.iteritems():
-            bootstrapped_results[key].append(values[indexes].mean())
+        indexes = np.random.choice(count, count, replace=True)
+        metrics = calc_metrics(probabilities[indexes])
+        if compare_probabilities is not None:
+            compare_metrics = calc_metrics(compare_probabilities[indexes])
+            for key in metrics.iterkeys():
+                metrics[key] -= compare_metrics[key]
+        for key, value in metrics.iteritems():
+            bootstrapped_results[key].append(value)
 
     left_percentile, right_percentile = 5, 95
     print '[%d%%, %d%%] confidence intervals:' % (left_percentile, right_percentile)
@@ -391,8 +418,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', default='records.csv',
                         help='File with input data')
-    parser.add_argument('--output', type=argparse.FileType('w'), default=sys.stdout,
-                        help='File to write ratings or parameters')
+    parser.add_argument('--output', '-o',
+                        help='File to write ratings, parameters, or probabilities')
     parser.set_defaults(func=process)
     parser.add_argument('--evaluate', dest='func', action='store_const', const=evaluate,
                         help='Evaluate model')
@@ -415,10 +442,12 @@ def main():
                         help='Tune capital instead of log-likelihood')
     parser.add_argument('--reg', dest='regularizer', type=float, default=0.0,
                         help='Regularizer used in tuning')
-    parser.add_argument('--folds', type=int, default=10,
+    parser.add_argument('--folds', type=int, default=20,
                         help='Number of folds for cross-validation')
     parser.add_argument('--threads', '-j', type=int,
                         help='Number of threads for cross-validation')
+    parser.add_argument('--compare-to', type=argparse.FileType(),
+                        help='File with probabilities to compare current model with it')
     args = parser.parse_args()
     np.random.seed(args.seed)
     random.seed(args.seed)
