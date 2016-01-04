@@ -323,13 +323,15 @@ def tune_parameters(records, valid_range, regularizer, tune_target, max_evals, r
 
 
 def evaluate_fold(params):
-    fold, records, whole_range, fold_range_len, args = params
+    sys.stdout.write('.')
+    sys.stdout.flush()
+    fold, records, whole_range, fold_range_len, regularizer, tunetarget, max_evals, seed = params
     fold_range = set(whole_range[fold * fold_range_len:(fold + 1) * fold_range_len])
     tune_range = set(whole_range) - set(fold_range)
     parameters, _ = tune_parameters(
-        records,
-        lambda j: j in tune_range,
-        args.regularizer, args.tunetarget, args.max_evals, args.seed)
+            records,
+            lambda j: j in tune_range,
+            regularizer, tunetarget, max_evals, seed)
     model = Model(Parameters.from_dict(parameters))
     probabilities = evaluate_model(model, records, lambda j: j in fold_range)
     return zip(sorted(fold_range), probabilities)
@@ -344,12 +346,14 @@ def cross_validate(args):
     fold_count = args.folds
     fold_range_len = (len(whole_range) + fold_count - 1) / fold_count
 
-    params = [(fold, records, whole_range, fold_range_len, args) for fold in xrange(fold_count)]
+    params = [(fold, records, whole_range, fold_range_len, args.regularizer, args.tunetarget, args.max_evals, args.seed)
+              for fold in xrange(fold_count)]
     if args.threads is None:
         results = map(evaluate_fold, params)
     else:
         pool = multiprocessing.Pool(args.threads)
         results = pool.map(evaluate_fold, params)
+    print
 
     all_results = sorted(itertools.chain.from_iterable(results))
     if args.output is not None:
