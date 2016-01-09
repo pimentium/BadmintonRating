@@ -101,21 +101,13 @@ class Model(object):
             player1_rating = self.single_ratings[player1]
             player2_rating = self.single_ratings[player2]
 
-            rating_diff = player1_rating - player2_rating
-            scaled_rating_diff = parameters.single_weights_sigmoid_scale * rating_diff
-            sig = sigmoid(scaled_rating_diff)
-            player1_weight = ((1 - sig) * parameters.lower_single_weight +
-                              sig * parameters.higher_single_weight)
-            player2_weight = (sig * parameters.lower_single_weight +
-                              (1 - sig) * parameters.higher_single_weight)
-
-            sig_derivative = sigmoid_derivative(scaled_rating_diff)
-            weight_diff = parameters.higher_single_weight - parameters.lower_single_weight
+            player1_weight = parameters.single_weight
+            player2_weight = parameters.single_weight
 
             team_count = self.team_play_counts[team]
-            weight_sum = parameters.single_weight + team_count
-            rating = (parameters.single_weight * (player1_weight * player1_rating + player2_weight * player2_rating +
-                                                  parameters.double_rating_shift) +
+            weight_sum = parameters.mixture_weight + team_count
+            rating = (parameters.mixture_weight * (player1_weight * player1_rating + player2_weight * player2_rating +
+                                                   parameters.double_rating_shift) +
                       team_count * proper_rating) / weight_sum
 
             return rating, [
@@ -123,13 +115,11 @@ class Model(object):
                          team_count / weight_sum,
                          parameters.double_learning_rate),
                 Variable(get_updater(self.single_ratings, player1),
-                         parameters.single_weight / weight_sum * (
-                             player1_weight + weight_diff * sig_derivative * scaled_rating_diff),
-                         parameters.double_single_learning_rate),
+                         parameters.mixture_weight / weight_sum * player1_weight,
+                         parameters.learning_rate),
                 Variable(get_updater(self.single_ratings, player2),
-                         parameters.single_weight / weight_sum * (
-                             player2_weight - weight_diff * sig_derivative * scaled_rating_diff),
-                         parameters.double_single_learning_rate)
+                         parameters.mixture_weight / weight_sum * player2_weight,
+                         parameters.learning_rate)
             ]
 
     def check_gradient(self, team, variables):
@@ -189,13 +179,9 @@ class Parameters(object):
         Parameter.log_normal_from_bounds('learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
         Parameter.normal_from_bounds('double_initial_rating', 1250, 2300),
         Parameter.log_normal_from_bounds('double_learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
-        Parameter.log_normal_from_bounds('single_weight', 1, 30),
-        Parameter.log_normal_from_bounds('higher_single_weight', 0.5, 0.95),
-        Parameter.log_normal_from_bounds('lower_single_weight', 0.3, 0.9),
-        Parameter.normal_from_bounds('double_rating_shift', -500, 100),
-        Parameter.log_normal_from_bounds('single_weights_sigmoid_scale', 0.01, 1),
-        Parameter.log_normal_from_bounds('double_single_learning_rate',
-                                         10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE)
+        Parameter.log_normal_from_bounds('mixture_weight', 1, 30),
+        Parameter.log_normal_from_bounds('single_weight', 0.3, 0.7),
+        Parameter.normal_from_bounds('double_rating_shift', -500, 100)
     ]
 
     def __init__(self, **kwargs):
@@ -220,6 +206,16 @@ class Parameters(object):
         for parameter in Parameters.PARAMETERS:
             value = getattr(self, parameter.label)
             print '%s: %f (%f quantile)' % (parameter.label, value, parameter.cdf(value))
+
+    @staticmethod
+    def print_histograms(parameters):
+        left_percentile, right_percentile = 5, 95
+        for parameter in Parameters.PARAMETERS:
+            values = [getattr(p, parameter.label) for p in parameters]
+            values = np.sort(values)
+            print '%s: [%f, %f]' % (parameter.label,
+                                    values[left_percentile * len(values) / 100],
+                                    values[right_percentile * len(values) / 100])
 
 
 def sigmoid(x):
@@ -332,18 +328,19 @@ def tune_parameters(records, valid_range, regularizer, tune_target, max_evals, r
 
 
 def evaluate_fold(params):
-    sys.stdout.write('.')
-    sys.stdout.flush()
     fold, records, whole_range, fold_range_len, regularizer, tunetarget, max_evals, seed = params
     fold_range = set(whole_range[fold * fold_range_len:(fold + 1) * fold_range_len])
     tune_range = set(whole_range) - set(fold_range)
-    parameters, _ = tune_parameters(
+    params_dict, _ = tune_parameters(
             records,
             lambda j: j in tune_range,
             regularizer, tunetarget, max_evals, seed)
-    model = Model(Parameters.from_dict(parameters))
+    params = Parameters.from_dict(params_dict)
+    model = Model(params)
     probabilities = evaluate_model(model, records, lambda j: j in fold_range)
-    return zip(sorted(fold_range), probabilities)
+    sys.stdout.write('.')
+    sys.stdout.flush()
+    return zip(sorted(fold_range), probabilities), params
 
 
 def cross_validate(args):
@@ -358,10 +355,10 @@ def cross_validate(args):
     params = [(fold, records, whole_range, fold_range_len, args.regularizer, args.tunetarget, args.max_evals, args.seed)
               for fold in xrange(fold_count)]
     if args.threads is None:
-        results = map(evaluate_fold, params)
+        results, parameters = zip(*map(evaluate_fold, params))
     else:
         pool = multiprocessing.Pool(args.threads)
-        results = pool.map(evaluate_fold, params)
+        results, parameters = zip(*pool.map(evaluate_fold, params))
     print
 
     all_results = sorted(itertools.chain.from_iterable(results))
@@ -404,6 +401,9 @@ def cross_validate(args):
         print '%s: [%f, %f]' % (key,
                                 values[left_percentile * len(values) / 100],
                                 values[right_percentile * len(values) / 100])
+
+    print 'Parameters intervals:'
+    Parameters.print_histograms(parameters)
 
 
 def parse_range(s):
