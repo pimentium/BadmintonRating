@@ -59,7 +59,7 @@ class Model(object):
     def __init__(self, parameters):
         self.parameters = parameters
         self.single_ratings = collections.defaultdict(lambda: Model.INITIAL_RATING)
-        self.double_ratings = collections.defaultdict(lambda: self.parameters.double_initial_rating)
+        self.double_ratings = collections.defaultdict(lambda: self.parameters.double_rating_shift)
         self.team_play_counts = collections.Counter()
 
     def predict_and_update(self, first_team, second_team, date):
@@ -70,8 +70,8 @@ class Model(object):
             delta = first_rating - second_rating
             sign = 1 if first_score > second_score else -1
             derivative = sigmoid(-sign * Model.SIGMOID_SCALE * delta)
-            first_updater(sign * Model.SIGMOID_SCALE * derivative)
-            second_updater(-sign * Model.SIGMOID_SCALE * derivative)
+            first_updater(sign * derivative)
+            second_updater(-sign * derivative)
 
         return sigmoid(Model.SIGMOID_SCALE * (first_rating - second_rating)), update
 
@@ -94,31 +94,24 @@ class Model(object):
             rating = self.single_ratings[player]
             return rating, [Variable(get_updater(self.single_ratings, player), 1, parameters.learning_rate)]
         else:
-            team = tuple(sorted(team))
-            proper_rating = self.double_ratings[team]
+            # team = tuple(sorted(team))
+            # proper_rating = self.double_ratings[team]
             player1, player2 = team
             assert player1 != player2
             player1_rating = self.single_ratings[player1]
             player2_rating = self.single_ratings[player2]
 
-            player1_weight = parameters.single_weight
-            player2_weight = parameters.single_weight
-
-            team_count = self.team_play_counts[team]
-            weight_sum = parameters.mixture_weight + team_count
-            rating = (parameters.mixture_weight * (player1_weight * player1_rating + player2_weight * player2_rating +
-                                                   parameters.double_rating_shift) +
-                      team_count * proper_rating) / weight_sum
+            rating = (player1_rating + player2_rating) / 2
 
             return rating, [
-                Variable(get_updater(self.double_ratings, team),
-                         team_count / weight_sum,
-                         parameters.double_learning_rate),
+                # Variable(get_updater(self.double_ratings, team),
+                #          1.,
+                #          parameters.double_learning_rate),
                 Variable(get_updater(self.single_ratings, player1),
-                         parameters.mixture_weight / weight_sum * player1_weight,
+                         0.5,
                          parameters.learning_rate),
                 Variable(get_updater(self.single_ratings, player2),
-                         parameters.mixture_weight / weight_sum * player2_weight,
+                         0.5,
                          parameters.learning_rate)
             ]
 
@@ -137,11 +130,11 @@ class Model(object):
         print >> output, 'Ratings:'
         for key, value in sorted(self.single_ratings.iteritems(), key=lambda (k, v): v, reverse=True):
             print >> output, '%s: %.0f' % (key, value)
-        print >> output, 'Pairs Ratings:'
-        for (player1, player2), value in sorted(self.double_ratings.iteritems(), key=lambda (k, v): v, reverse=True):
-            if self.single_ratings.get(player1) < self.single_ratings.get(player2):
-                player1, player2 = player2, player1
-            print >> output, '%s, %s: %.0f' % (player1, player2, value)
+        # print >> output, 'Pairs Ratings:'
+        # for (player1, player2), value in sorted(self.double_ratings.iteritems(), key=lambda (k, v): v, reverse=True):
+        #     if self.single_ratings.get(player1) < self.single_ratings.get(player2):
+        #         player1, player2 = player2, player1
+        #     print >> output, '%s, %s: %.0f' % (player1, player2, value)
 
 
 class Parameter(object):
@@ -176,12 +169,7 @@ class Parameter(object):
 
 class Parameters(object):
     PARAMETERS = [
-        Parameter.log_normal_from_bounds('learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
-        Parameter.normal_from_bounds('double_initial_rating', 1250, 2300),
-        Parameter.log_normal_from_bounds('double_learning_rate', 10 / Model.SIGMOID_SCALE, 100 / Model.SIGMOID_SCALE),
-        Parameter.log_normal_from_bounds('mixture_weight', 1, 30),
-        Parameter.log_normal_from_bounds('single_weight', 0.3, 0.7),
-        Parameter.normal_from_bounds('double_rating_shift', -500, 100)
+        Parameter.log_normal_from_bounds('learning_rate', 10, 100),
     ]
 
     def __init__(self, **kwargs):
