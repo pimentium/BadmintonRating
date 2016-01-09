@@ -20,7 +20,6 @@ from scipy import stats
 # - Playing with parameters
 # - Use score values
 # - Aggregate by day
-# - Normal variables (uncorrelated / correlated)
 # - Bet prediction
 #
 
@@ -156,11 +155,12 @@ class Model(object):
 
 
 class Parameter(object):
-    def __init__(self, label, default_value, hp_variable, log_pdf):
+    def __init__(self, label, default_value, hp_variable, log_pdf, cdf):
         self.label = label
         self.default_value = default_value
         self.hp_variable = hp_variable
         self.log_pdf = log_pdf
+        self.cdf = cdf
 
     @staticmethod
     def normal_from_bounds(label, left_bound, right_bound, quantization=None):
@@ -168,7 +168,8 @@ class Parameter(object):
         sigma = (right_bound - left_bound) / 4.0
         hp_variable = (hp.normal(label, mean, sigma) if quantization is None
                        else hp.qnormal(label, mean, sigma, quantization))
-        return Parameter(label, mean, hp_variable, stats.norm(mean, sigma).logpdf)
+        dist = stats.norm(mean, sigma)
+        return Parameter(label, mean, hp_variable, dist.logpdf, dist.cdf)
 
     @staticmethod
     def log_normal_from_bounds(label, left_bound, right_bound, quantization=None):
@@ -179,7 +180,8 @@ class Parameter(object):
         mean = np.exp(log_mean)
         hp_variable = (hp.lognormal(label, log_mean, log_sigma) if quantization is None
                        else hp.qlognormal(label, log_mean, log_sigma, quantization))
-        return Parameter(label, mean, hp_variable, stats.lognorm(log_sigma, scale=mean).logpdf)
+        dist = stats.lognorm(log_sigma, scale=mean)
+        return Parameter(label, mean, hp_variable, dist.logpdf, dist.cdf)
 
 
 class Parameters(object):
@@ -213,6 +215,11 @@ class Parameters(object):
 
     def log_pdf(self):
         return sum(parameter.log_pdf(getattr(self, parameter.label)) for parameter in Parameters.PARAMETERS)
+
+    def print_info(self):
+        for parameter in Parameters.PARAMETERS:
+            value = getattr(self, parameter.label)
+            print '%s: %f (%f quantile)' % (parameter.label, value, parameter.cdf(value))
 
 
 def sigmoid(x):
@@ -297,8 +304,10 @@ def tune(args):
     print 'Best results'
     for key, value in best_result.iteritems():
         print '%s: %s' % (key, value)
-    for key, value in best_parameters.iteritems():
-        print '%s: %s' % (key, value)
+    print 'Parameters'
+    Parameters.from_dict(best_parameters).print_info()
+    # for key, value in best_parameters.iteritems():
+    #     print '%s: %s' % (key, value)
     if args.output is not None:
         with open(args.output, 'w') as output:
             json.dump(best_parameters, output)
@@ -437,7 +446,7 @@ def main():
                         help='File with model parameters')
     parser.add_argument('--checkgrad', default=False, action='store_true',
                         help='Check that gradient is correct on every update of the model')
-    parser.add_argument('--max_evals', type=int, default=100,
+    parser.add_argument('--max-evals', type=int, default=100,
                         help='Maximal number of function evaluations during tuning')
     parser.add_argument('--seed', type=int, default=123,
                         help='Random seed')
