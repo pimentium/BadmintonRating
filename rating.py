@@ -17,7 +17,6 @@ from scipy import stats
 #
 # Ideas:
 # - Bet_p optimization
-# - Playing with parameters
 # - Use score values
 # - Aggregate by day
 # - Bet prediction
@@ -59,8 +58,6 @@ class Model(object):
     def __init__(self, parameters):
         self.parameters = parameters
         self.single_ratings = collections.defaultdict(lambda: Model.INITIAL_RATING)
-        self.double_ratings = collections.defaultdict(lambda: self.parameters.double_rating_shift)
-        self.team_play_counts = collections.Counter()
 
     def predict_and_update(self, first_team, second_team, date):
         first_rating, first_updater = self.get_team_rating_and_updater(first_team)
@@ -77,13 +74,13 @@ class Model(object):
 
     def get_team_rating_and_updater(self, team):
         rating, variables = self.get_team_rating_and_variables(team)
+
         if Model.CHECK_GRADIENT:
             self.check_gradient(team, variables)
 
         def update(derivative):
             for variable in variables:
                 variable.update(derivative)
-            self.team_play_counts[tuple(sorted(team))] += 1
 
         return rating, update
 
@@ -94,25 +91,14 @@ class Model(object):
             rating = self.single_ratings[player]
             return rating, [Variable(get_updater(self.single_ratings, player), 1, parameters.learning_rate)]
         else:
-            # team = tuple(sorted(team))
-            # proper_rating = self.double_ratings[team]
             player1, player2 = team
             assert player1 != player2
             player1_rating = self.single_ratings[player1]
             player2_rating = self.single_ratings[player2]
-
             rating = (player1_rating + player2_rating) / 2
-
             return rating, [
-                # Variable(get_updater(self.double_ratings, team),
-                #          1.,
-                #          parameters.double_learning_rate),
-                Variable(get_updater(self.single_ratings, player1),
-                         0.5,
-                         parameters.learning_rate),
-                Variable(get_updater(self.single_ratings, player2),
-                         0.5,
-                         parameters.learning_rate)
+                Variable(get_updater(self.single_ratings, player1), 0.5, parameters.learning_rate),
+                Variable(get_updater(self.single_ratings, player2), 0.5, parameters.learning_rate)
             ]
 
     def check_gradient(self, team, variables):
@@ -130,11 +116,6 @@ class Model(object):
         print >> output, 'Ratings:'
         for key, value in sorted(self.single_ratings.iteritems(), key=lambda (k, v): v, reverse=True):
             print >> output, '%s: %.0f' % (key, value)
-        # print >> output, 'Pairs Ratings:'
-        # for (player1, player2), value in sorted(self.double_ratings.iteritems(), key=lambda (k, v): v, reverse=True):
-        #     if self.single_ratings.get(player1) < self.single_ratings.get(player2):
-        #         player1, player2 = player2, player1
-        #     print >> output, '%s, %s: %.0f' % (player1, player2, value)
 
 
 class Parameter(object):
@@ -290,8 +271,6 @@ def tune(args):
         print '%s: %s' % (key, value)
     print 'Parameters'
     Parameters.from_dict(best_parameters).print_info()
-    # for key, value in best_parameters.iteritems():
-    #     print '%s: %s' % (key, value)
     if args.output is not None:
         with open(args.output, 'w') as output:
             json.dump(best_parameters, output)
