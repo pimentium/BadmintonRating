@@ -150,7 +150,7 @@ class Parameter(object):
 
 class Parameters(object):
     PARAMETERS = [
-        Parameter.log_normal_from_bounds('learning_rate', 10, 100),
+        Parameter.log_normal_from_bounds('learning_rate', 25, 100),
     ]
 
     def __init__(self, **kwargs):
