@@ -234,6 +234,7 @@ def evaluate_parameters(parameters, records, valid_range=None):
 
 
 def read(filename):
+    result = []
     with open(filename) as data_file:
         data_file.readline()
         for line in data_file:
@@ -243,7 +244,9 @@ def read(filename):
             second_team = (tokens[3], tokens[4]) if tokens[4] else (tokens[3],)
             first_score = int(tokens[5])
             second_score = int(tokens[6])
-            yield Record(first_team, second_team, date, first_score, second_score)
+            result.append(Record(first_team, second_team, date, first_score, second_score))
+    result.sort(key=lambda record: record.date)
+    return result
 
 
 def process(args):
@@ -263,7 +266,7 @@ def evaluate(args):
 
 
 def tune(args):
-    records = list(read(args.input))
+    records = read(args.input)
     best_parameters, best_result = tune_parameters(records, args.range, args.regularizer, args.tunetarget,
                                                    args.max_evals, args.seed)
     print 'Best results'
@@ -311,7 +314,7 @@ def evaluate_fold(params):
 
 
 def cross_validate(args):
-    records = list(read(args.input))
+    records = read(args.input)
     whole_range = range(len(records))
     random.shuffle(whole_range)
     if args.range is not None:
