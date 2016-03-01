@@ -6,7 +6,7 @@ import multiprocessing
 import random
 import sys
 
-import datetime
+from datetime import datetime, timedelta
 import itertools
 import numpy as np
 import hyperopt
@@ -58,6 +58,8 @@ class Model(object):
     def __init__(self, parameters):
         self.parameters = parameters
         self.single_ratings = collections.defaultdict(lambda: Model.INITIAL_RATING)
+        self.last_play = {}
+        self.play_count = {}
 
     def predict_and_update(self, first_team, second_team, date):
         first_rating, first_updater = self.get_team_rating_and_updater(first_team)
@@ -69,6 +71,9 @@ class Model(object):
             derivative = sigmoid(-sign * Model.SIGMOID_SCALE * delta)
             first_updater(sign * derivative)
             second_updater(-sign * derivative)
+            for player in list(first_team) + list(second_team):
+                self.play_count[player] = self.play_count.get(player, 0) + 1
+                self.last_play[player] = max(self.last_play.get(player, date), date)
 
         return sigmoid(Model.SIGMOID_SCALE * (first_rating - second_rating)), update
 
@@ -112,10 +117,28 @@ class Model(object):
                 self.get_team_rating_and_variables(team)
             assert abs((high_rating - low_rating) / 2e-7 - variable.partial_derivative) < 1e-5
 
-    def print_info(self, output):
-        print >> output, 'Ratings:'
-        for key, value in sorted(self.single_ratings.iteritems(), key=lambda (k, v): v, reverse=True):
-            print >> output, '%s: %.0f' % (key, value)
+    TIMEOUT = timedelta(days=90)
+
+    def print_info(self, output, now):
+        if now is None:
+            now = datetime.now()
+        players = self.single_ratings.keys()
+        players.sort(key=lambda p: self.single_ratings[p], reverse=True)
+        items = []
+        place = 0
+        for player in players:
+            last = self.last_play[player]
+            item = {
+                'name': player,
+                'rating': self.single_ratings[player],
+                'count': self.play_count[player],
+                'last': last.strftime('%Y-%m-%d %H:%M:%S')
+            }
+            if last > now - Model.TIMEOUT:
+                place += 1
+                item['place'] = place
+            items.append(item)
+        json.dump(items, output, indent=2)
 
 
 class Parameter(object):
@@ -239,7 +262,7 @@ def read(filename):
         data_file.readline()
         for line in data_file:
             tokens = line.split(',')
-            date = datetime.datetime.strptime(tokens[0], '%m/%d/%Y %H:%M:%S')
+            date = datetime.strptime(tokens[0], '%m/%d/%Y %H:%M:%S')
             first_team = (tokens[1], tokens[2]) if tokens[2] else (tokens[1],)
             second_team = (tokens[3], tokens[4]) if tokens[4] else (tokens[3],)
             first_score = int(tokens[5])
@@ -254,7 +277,7 @@ def process(args):
     records = read(args.input)
     evaluate_model(model, records, lambda i: False)
     output = open(args.output, 'w') if args.output is not None else sys.stdout
-    model.print_info(output)
+    model.print_info(output, args.now)
     if args.output is not None:
         print 'Ratings are saved in', args.output
 
@@ -302,9 +325,9 @@ def evaluate_fold(params):
     fold_range = set(whole_range[fold * fold_range_len:(fold + 1) * fold_range_len])
     tune_range = set(whole_range) - set(fold_range)
     params_dict, _ = tune_parameters(
-            records,
-            lambda j: j in tune_range,
-            regularizer, tunetarget, max_evals, seed)
+        records,
+        lambda j: j in tune_range,
+        regularizer, tunetarget, max_evals, seed)
     params = Parameters.from_dict(params_dict)
     model = Model(params)
     probabilities = evaluate_model(model, records, lambda j: j in fold_range)
@@ -431,6 +454,8 @@ def main():
                         help='Number of threads for cross-validation')
     parser.add_argument('--compare-to', type=argparse.FileType(),
                         help='File with probabilities to compare current model with it')
+    parser.add_argument('--now', type=lambda s: datetime.strptime(s, '%Y-%m-%d'),
+                        help='Use custom time of rating places determination')
     args = parser.parse_args()
     np.random.seed(args.seed)
     random.seed(args.seed)
