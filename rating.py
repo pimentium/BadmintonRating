@@ -262,7 +262,10 @@ def read(filename):
         data_file.readline()
         for line in data_file:
             tokens = line.split(',')
-            date = datetime.strptime(tokens[0], '%m/%d/%Y %H:%M:%S')
+            try:
+                date = datetime.strptime(tokens[0], '%m/%d/%Y %H:%M:%S')
+            except ValueError:
+                date = datetime.strptime(tokens[0], '%m/%d/%Y')
             first_team = (tokens[1], tokens[2]) if tokens[2] else (tokens[1],)
             second_team = (tokens[3], tokens[4]) if tokens[4] else (tokens[3],)
             first_score = int(tokens[5])
